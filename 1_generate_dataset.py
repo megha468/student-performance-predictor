@@ -1,99 +1,62 @@
 """
-STEP 1: Generate the dataset
------------------------------
-This creates a realistic, synthetic "student performance" dataset with the
-same kind of columns you'd find in the real UCI Student Performance dataset
-or the Kaggle "Students Performance in Exams" dataset:
+STEP 1: Generate Realistic Student Performance Dataset
+------------------------------------------------------
+Generates a realistic, synthetic student performance dataset with behavioral,
+lifestyle, and demographic factors, then exports to `student_data.csv`.
 
-    study_hours_per_week   - how many hours/week the student studies
-    attendance_percent     - % of classes attended
-    previous_score         - score in the last exam (0-100)
-    parental_education     - highest education level of parents
-    internet_access        - yes/no, has internet at home
-    extracurricular        - yes/no, participates in extracurricular activities
-    sleep_hours            - average hours of sleep per night
-    final_score             - TARGET (0-100), what we want to predict
-
-We build final_score from a realistic formula (study time, attendance and
-past performance matter most) plus random noise, so the patterns a model
-finds are believable, not random.
+Columns:
+  - study_hours_per_week: Weekly study volume (0-40)
+  - attendance_percent:   Class attendance rate (30-100%)
+  - previous_score:       Previous exam score (0-100)
+  - sleep_hours:          Average nightly sleep (3-10)
+  - parental_education:   high_school / bachelors / masters / phd
+  - internet_access:      yes / no
+  - extracurricular:      yes / no
+  - final_score:          Target continuous score (0-100)
+  - pass_fail:            Pass (>=40) / Fail (<40)
+  - grade:                A (>=85), B (70-84.9), C (50-69.9), D (<50)
 """
 
 import os
-import numpy as np
-import pandas as pd
+import sys
 
-# Save files in the SAME folder this script is in (works on any computer)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+from src.student_predictor.data import generate_dataset
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_FILE = os.path.join(BASE_DIR, "student_data.csv")
 
-np.random.seed(42)
-N = 1000  # number of students
 
-# --- Features ---
-study_hours_per_week = np.clip(np.random.normal(15, 6, N), 0, 40)
-attendance_percent = np.clip(np.random.normal(80, 12, N), 30, 100)
-previous_score = np.clip(np.random.normal(65, 15, N), 0, 100)
+def main():
+    print("=" * 70)
+    print("🎓 STUDENT PERFORMANCE PREDICTOR — DATASET GENERATOR")
+    print("=" * 70)
 
-parental_education = np.random.choice(
-    ["high_school", "bachelors", "masters", "phd"],
-    size=N, p=[0.4, 0.35, 0.2, 0.05]
-)
-internet_access = np.random.choice(["yes", "no"], size=N, p=[0.85, 0.15])
-extracurricular = np.random.choice(["yes", "no"], size=N, p=[0.5, 0.5])
-sleep_hours = np.clip(np.random.normal(7, 1.3, N), 3, 10)
+    print("\n[INFO] Synthesizing 1,000 student behavioral records...")
+    df = generate_dataset(n_samples=1000, random_state=42, output_path=OUTPUT_FILE)
 
-# Map parental education to a numeric "boost" for score formula
-edu_boost = pd.Series(parental_education).map(
-    {"high_school": 0, "bachelors": 2, "masters": 4, "phd": 6}
-).values
-internet_boost = pd.Series(internet_access).map({"yes": 3, "no": 0}).values
-extracurricular_boost = pd.Series(extracurricular).map({"yes": 1, "no": 0}).values
+    print(f"[SUCCESS] Saved dataset -> {OUTPUT_FILE}")
+    print(f"Dimensions: {df.shape[0]} rows x {df.shape[1]} columns\n")
 
-# --- Target: final_score ---
-# Study hours and previous score matter most, attendance matters a lot too.
-final_score = (
-    0.9 * previous_score * 0.4
-    + study_hours_per_week * 1.3
-    + attendance_percent * 0.25
-    + edu_boost
-    + internet_boost
-    + extracurricular_boost
-    - np.abs(sleep_hours - 7.5) * 2       # too little/too much sleep hurts slightly
-    + np.random.normal(0, 6, N)           # random noise (life happens)
-)
-final_score = np.clip(final_score, 0, 100).round(1)
+    print("-" * 50)
+    print("Dataset Sample (First 5 Rows):")
+    print("-" * 50)
+    print(df.head())
 
-df = pd.DataFrame({
-    "study_hours_per_week": study_hours_per_week.round(1),
-    "attendance_percent": attendance_percent.round(1),
-    "previous_score": previous_score.round(1),
-    "parental_education": parental_education,
-    "internet_access": internet_access,
-    "extracurricular": extracurricular,
-    "sleep_hours": sleep_hours.round(1),
-    "final_score": final_score,
-})
+    print("\n" + "-" * 50)
+    print("Letter Grade Distribution:")
+    print("-" * 50)
+    print(df["grade"].value_counts())
 
-# Derived labels used later:
-# Pass/Fail -> pass if final_score >= 40
-df["pass_fail"] = np.where(df["final_score"] >= 40, "Pass", "Fail")
+    print("\n" + "-" * 50)
+    print("Pass/Fail Outcome Distribution:")
+    print("-" * 50)
+    print(df["pass_fail"].value_counts())
 
-# Letter grade -> A/B/C/D based on common thresholds
-def grade(score):
-    if score >= 85:
-        return "A"
-    elif score >= 70:
-        return "B"
-    elif score >= 50:
-        return "C"
-    else:
-        return "D"
+    print("\n[DONE] Dataset generation completed successfully.")
 
-df["grade"] = df["final_score"].apply(grade)
 
-df.to_csv(os.path.join(BASE_DIR, "student_data.csv"), index=False)
-print("Dataset created: student_data.csv")
-print(df.head())
-print("\nShape:", df.shape)
-print("\nGrade distribution:\n", df["grade"].value_counts())
-print("\nPass/Fail distribution:\n", df["pass_fail"].value_counts())
+if __name__ == "__main__":
+    main()

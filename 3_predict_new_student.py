@@ -1,73 +1,84 @@
 """
-STEP 9: PREDICT FOR A NEW STUDENT
------------------------------------
-Loads the trained models and predicts:
-  - Final Score (number)
-  - Pass / Fail
-  - Letter Grade (A/B/C/D)
-
-for one or more new students you describe below.
-
-HOW TO USE:
-Just edit the `new_students` list below with real values, then run:
-    python3 3_predict_new_student.py
+STEP 9: Real-Time Inference & AI Recommendations
+------------------------------------------------
+Demonstrates command-line inference for student profiles with
+prediction probabilities, risk assessment, and personalized advisory insights.
 """
 
 import os
-import pandas as pd
-import joblib
+import sys
 
-# Use the SAME folder this script is in (works on any computer)
-OUT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Ensure UTF-8 output on Windows consoles
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-# Load everything we saved during training
-reg_model = joblib.load(f"{OUT_DIR}/model_score_regressor.pkl")
-clf_passfail = joblib.load(f"{OUT_DIR}/model_passfail_classifier.pkl")
-clf_grade = joblib.load(f"{OUT_DIR}/model_grade_classifier.pkl")
-le_pf = joblib.load(f"{OUT_DIR}/encoder_passfail.pkl")
-le_grade = joblib.load(f"{OUT_DIR}/encoder_grade.pkl")
-feature_cols = joblib.load(f"{OUT_DIR}/feature_columns.pkl")
+from src.student_predictor.advisor import generate_recommendations
+from src.student_predictor.models import load_model_suite
 
-# ---- EDIT THIS: describe the new student(s) you want to predict for ----
-new_students = [
-    {
-        "study_hours_per_week": 20,
-        "attendance_percent": 90,
-        "previous_score": 75,
-        "sleep_hours": 7.5,
-        "parental_education": "bachelors",   # high_school / bachelors / masters / phd
-        "internet_access": "yes",             # yes / no
-        "extracurricular": "no",              # yes / no
-    },
-    {
-        "study_hours_per_week": 5,
-        "attendance_percent": 55,
-        "previous_score": 40,
-        "sleep_hours": 5.0,
-        "parental_education": "high_school",
-        "internet_access": "no",
-        "extracurricular": "no",
-    },
-]
-# --------------------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-new_df = pd.DataFrame(new_students)
 
-# Encode the same way training data was encoded
-new_encoded = pd.get_dummies(
-    new_df, columns=["parental_education", "internet_access", "extracurricular"]
-)
+def main():
+    print("=" * 75)
+    print("[*] STUDENT PERFORMANCE PREDICTOR -- INFERENCE & ADVISORY")
+    print("=" * 75)
 
-# Make sure it has exactly the same columns as training data (fill missing with 0)
-new_encoded = new_encoded.reindex(columns=feature_cols, fill_value=0)
+    suite = load_model_suite(BASE_DIR)
 
-# Predict
-scores = reg_model.predict(new_encoded)
-passfail = le_pf.inverse_transform(clf_passfail.predict(new_encoded))
-grades = le_grade.inverse_transform(clf_grade.predict(new_encoded))
+    # Example student cohort profiles
+    cohort = [
+        {
+            "name": "Alex Taylor (Dedicated Scholar)",
+            "study_hours_per_week": 22.0,
+            "attendance_percent": 94.0,
+            "previous_score": 82.0,
+            "sleep_hours": 7.5,
+            "parental_education": "bachelors",
+            "internet_access": "yes",
+            "extracurricular": "yes",
+        },
+        {
+            "name": "Jordan Lee (At-Risk Intervention Needed)",
+            "study_hours_per_week": 4.5,
+            "attendance_percent": 52.0,
+            "previous_score": 38.0,
+            "sleep_hours": 4.5,
+            "parental_education": "high_school",
+            "internet_access": "no",
+            "extracurricular": "no",
+        },
+    ]
 
-for i, student in enumerate(new_students):
-    print(f"\nStudent {i + 1}: {student}")
-    print(f"  -> Predicted Final Score : {scores[i]:.1f} / 100")
-    print(f"  -> Predicted Pass/Fail   : {passfail[i]}")
-    print(f"  -> Predicted Grade       : {grades[i]}")
+    for idx, student in enumerate(cohort, 1):
+        name = student.pop("name")
+        pred = suite.predict_single(student)
+        recs = generate_recommendations(student, pred)
+
+        print(f"\n[{idx}] Profile: {name}")
+        print("-" * 65)
+        print(
+            f"  - Inputs             : {student['study_hours_per_week']}h/wk study | "
+            f"{student['attendance_percent']}% att. | "
+            f"{student['previous_score']} prior score | "
+            f"{student['sleep_hours']}h sleep"
+        )
+        print(f"  - Predicted Score    : {pred['predicted_score']:.1f} / 100")
+        print(
+            f"  - Predicted Grade    : {pred['predicted_grade']} "
+            f"(Probabilities: {pred['grade_probabilities']})"
+        )
+        print(
+            f"  - Outcome            : {pred['predicted_passfail']} "
+            f"(Confidence: {pred['passfail_probabilities'].get(pred['predicted_passfail'], 0.0):.1%})"
+        )
+        print(f"  - Risk Tier          : {pred['risk_tier']}")
+
+        print("\n  >> AI Academic Action Plan:")
+        for r in recs:
+            print(f"     [{r['category']}] {r['action']}")
+
+    print("\n" + "=" * 75)
+
+
+if __name__ == "__main__":
+    main()

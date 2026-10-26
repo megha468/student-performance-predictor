@@ -37,6 +37,179 @@ DEFAULT_INPUTS = {
     "extracurricular": "no",
 }
 
+DEFAULT_SUBJECTS: Dict[str, float] = {
+    "Mathematics": 75.0,
+    "Science": 70.0,
+    "English": 80.0,
+    "Social Science": 72.0,
+    "Computer Science": 78.0,
+}
+
+SUBJECT_PROFILES: Dict[str, Dict[str, Any]] = {
+    "Mathematics": {
+        "icon": "📐",
+        "weight": 1.15,
+        "study_sensitivity": 0.22,
+        "advice_strong": "Exemplary analytical reasoning! Continue solving advanced problem sets to maintain top percentile marks.",
+        "advice_average": "Solid foundation. Increase daily targeted problem-solving by 20-30 mins to avoid exam calculation slips.",
+        "advice_weak": "Prioritize algebra and geometry fundamentals with step-by-step worked examples before timed tests.",
+    },
+    "Science": {
+        "icon": "🔬",
+        "weight": 1.10,
+        "study_sensitivity": 0.18,
+        "advice_strong": "Outstanding conceptual mastery in scientific principles! Maintain lab experiment curiosity.",
+        "advice_average": "Good scientific intuition. Review reaction formulas, physics derivations, and biology diagrams weekly.",
+        "advice_weak": "Focus on core scientific definitions and practice chapter-end numerical questions.",
+    },
+    "English": {
+        "icon": "📚",
+        "weight": 0.85,
+        "study_sensitivity": 0.10,
+        "advice_strong": "Exceptional verbal and essay articulation! Excellent reading comprehension scores.",
+        "advice_average": "Consistent comprehension. Read high-level literature and practice timed structured essays.",
+        "advice_weak": "Dedicate 15 minutes each evening to vocabulary enrichment and grammar correction drills.",
+    },
+    "Social Science": {
+        "icon": "🌍",
+        "weight": 0.90,
+        "study_sensitivity": 0.12,
+        "advice_strong": "Remarkable grasp of historical chronologies, civics, and geographic systems.",
+        "advice_average": "Steady recall. Use concept maps and timeline charts to retain historical events and case studies.",
+        "advice_weak": "Build visual flashcards for key historical dates, constitutional terms, and geographic maps.",
+    },
+    "Computer Science": {
+        "icon": "💻",
+        "weight": 1.05,
+        "study_sensitivity": 0.20,
+        "advice_strong": "Superb algorithmic thinking and coding aptitude! Explore open-source projects or data structures.",
+        "advice_average": "Strong theoretical understanding. Write and debug working code regularly instead of just reading theory.",
+        "advice_weak": "Focus on basic algorithmic logic, conditional structures, and pseudocode debugging exercises.",
+    },
+}
+
+
+def predict_subject_wise(
+    overall_prediction: Dict[str, Any],
+    subject_marks: Dict[str, float],
+    inputs: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Predict upcoming marks for each individual subject based on previous year subject marks,
+    overall ML model trajectory, study volume, attendance, and sleep habits.
+    
+    Returns a dictionary containing:
+        - "subjects": Dict[subject_name, subject_result_dict]
+        - "summary": Dict with strongest subject, weakest subject, average improvement, etc.
+    """
+    if not subject_marks:
+        subject_marks = DEFAULT_SUBJECTS.copy()
+
+    overall_pred_score = float(overall_prediction.get("predicted_score", 65.0))
+    prev_scores = [float(v) for v in subject_marks.values()]
+    prev_avg = sum(prev_scores) / len(prev_scores) if prev_scores else 65.0
+    overall_delta = overall_pred_score - prev_avg
+
+    study_hours = float(inputs.get("study_hours_per_week", 15.0))
+    attendance = float(inputs.get("attendance_percent", 80.0))
+    sleep = float(inputs.get("sleep_hours", 7.0))
+
+    study_delta = (study_hours - 15.0) * 0.15
+    att_delta = (attendance - 80.0) * 0.08
+    sleep_penalty = -2.0 if sleep < 6.0 else (0.5 if 7.0 <= sleep <= 8.5 else 0.0)
+
+    results: Dict[str, Dict[str, Any]] = {}
+
+    for sub_name, prev_val in subject_marks.items():
+        prev_s = float(prev_val)
+        profile = SUBJECT_PROFILES.get(sub_name, {
+            "icon": "📝",
+            "weight": 1.0,
+            "study_sensitivity": 0.15,
+            "advice_strong": "Great job! Keep up your steady performance.",
+            "advice_average": "Consistent effort. Practice more to reach top tier.",
+            "advice_weak": "Needs focused attention and structured review.",
+        })
+
+        subj_momentum = overall_delta * profile["weight"]
+        habit_effect = study_delta * (profile["study_sensitivity"] / 0.15) + att_delta + sleep_penalty
+
+        raw_upcoming = prev_s + subj_momentum + habit_effect
+        upcoming_score = round(max(0.0, min(100.0, raw_upcoming)), 1)
+        diff = round(upcoming_score - prev_s, 1)
+
+        if upcoming_score >= 85.0:
+            grade = "A"
+            advice = profile["advice_strong"]
+        elif upcoming_score >= 70.0:
+            grade = "B"
+            advice = profile["advice_average"]
+        elif upcoming_score >= 50.0:
+            grade = "C"
+            advice = profile["advice_average"]
+        else:
+            grade = "D"
+            advice = profile["advice_weak"]
+
+        passfail = "PASS" if upcoming_score >= 40.0 else "FAIL"
+
+        if diff >= 2.0:
+            trend = "Improving 🚀"
+        elif diff <= -2.0:
+            trend = "Declining ⚠️"
+        else:
+            trend = "Steady ⚖️"
+
+        results[sub_name] = {
+            "icon": profile["icon"],
+            "previous_score": prev_s,
+            "predicted_score": upcoming_score,
+            "score_diff": diff,
+            "predicted_grade": grade,
+            "predicted_passfail": passfail,
+            "trend": trend,
+            "advice": advice,
+        }
+
+    # Smooth normalization so the mean of subjects tracks overall_pred_score
+    subject_predicted_scores = [v["predicted_score"] for v in results.values()]
+    mean_pred = sum(subject_predicted_scores) / len(subject_predicted_scores)
+    discrepancy = overall_pred_score - mean_pred
+
+    for sub_name in results:
+        adjusted_score = round(max(0.0, min(100.0, results[sub_name]["predicted_score"] + discrepancy * 0.4)), 1)
+        prev_s = results[sub_name]["previous_score"]
+        diff = round(adjusted_score - prev_s, 1)
+        results[sub_name]["predicted_score"] = adjusted_score
+        results[sub_name]["score_diff"] = diff
+        if adjusted_score >= 85.0:
+            results[sub_name]["predicted_grade"] = "A"
+        elif adjusted_score >= 70.0:
+            results[sub_name]["predicted_grade"] = "B"
+        elif adjusted_score >= 50.0:
+            results[sub_name]["predicted_grade"] = "C"
+        else:
+            results[sub_name]["predicted_grade"] = "D"
+        results[sub_name]["predicted_passfail"] = "PASS" if adjusted_score >= 40.0 else "FAIL"
+
+    sorted_by_pred = sorted(results.items(), key=lambda item: item[1]["predicted_score"], reverse=True)
+    strongest = sorted_by_pred[0]
+    weakest = sorted_by_pred[-1]
+
+    summary = {
+        "strongest_subject": strongest[0],
+        "strongest_score": strongest[1]["predicted_score"],
+        "weakest_subject": weakest[0],
+        "weakest_score": weakest[1]["predicted_score"],
+        "average_previous": round(prev_avg, 1),
+        "average_predicted": round(sum(v["predicted_score"] for v in results.values()) / len(results), 1),
+    }
+
+    return {
+        "subjects": results,
+        "summary": summary,
+    }
+
 
 class StudentModelSuite:
     """Encapsulates all trained models, encoders, and feature column schemas."""
@@ -125,6 +298,22 @@ class StudentModelSuite:
             "grade_probabilities": grade_proba,
             "risk_tier": risk_tier,
             "risk_color": risk_color,
+        }
+
+    def predict_with_subjects(
+        self,
+        inputs: Dict[str, Any],
+        subject_marks: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Produce a comprehensive prediction bundle including overall metrics
+        and fine-grained subject-wise predicted upcoming marks.
+        """
+        overall = self.predict_single(inputs)
+        sub_bundle = predict_subject_wise(overall, subject_marks or {}, inputs)
+        return {
+            **overall,
+            "subject_breakdown": sub_bundle,
         }
 
     def predict_batch(self, df_batch: pd.DataFrame) -> pd.DataFrame:

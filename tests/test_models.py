@@ -4,7 +4,7 @@ Unit tests for Machine Learning Models and Advisor Module.
 
 import os
 import unittest
-from src.student_predictor.models import load_model_suite
+from src.student_predictor.models import load_model_suite, predict_subject_wise
 from src.student_predictor.advisor import (
     generate_recommendations,
     simulate_what_if,
@@ -82,6 +82,32 @@ class TestModelsAndAdvisor(unittest.TestCase):
         goal = target_goal_solver(self.suite, base, target_score=85.0)
         self.assertIn("target_score", goal)
         self.assertIn("current_score", goal)
+
+    def test_predict_subject_wise(self):
+        sample = {
+            "study_hours_per_week": 18.0,
+            "attendance_percent": 88.0,
+            "previous_score": 75.0,
+            "sleep_hours": 7.5,
+        }
+        pred = self.suite.predict_single(sample)
+        subjects = {
+            "Mathematics": 78.0,
+            "Science": 72.0,
+            "English": 80.0,
+            "Social Science": 74.0,
+            "Computer Science": 82.0,
+        }
+        res = predict_subject_wise(pred, subjects, sample)
+        self.assertIn("subjects", res)
+        self.assertIn("summary", res)
+        self.assertEqual(len(res["subjects"]), 5)
+        for s in subjects:
+            self.assertIn(s, res["subjects"])
+            self.assertIn("predicted_score", res["subjects"][s])
+            self.assertIn("predicted_grade", res["subjects"][s])
+            self.assertIn("predicted_passfail", res["subjects"][s])
+            self.assertIn("score_diff", res["subjects"][s])
 
 
 if __name__ == "__main__":

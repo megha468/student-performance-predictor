@@ -126,6 +126,17 @@ class TestDatabase(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIsNotNone(verify_user("grace", "newpass123", db_path=self.db_path))
 
+    def test_save_prediction_with_subjects(self):
+        create_user("helen", "password123", "Helen Keller", role="student", db_path=self.db_path)
+        inputs = {"study_hours_per_week": 20.0, "attendance_percent": 90.0, "previous_score": 75.0}
+        sub_scores = {"subjects": {"Mathematics": {"predicted_score": 85.0}}, "summary": {"strongest_subject": "Mathematics"}}
+        pred_id = save_prediction("helen", inputs, 85.0, "Pass", "A", db_path=self.db_path, subject_scores=sub_scores)
+        self.assertGreater(pred_id, 0)
+        preds = get_predictions_for_user("helen", db_path=self.db_path)
+        self.assertEqual(len(preds), 1)
+        self.assertIn("subject_scores", preds[0].keys())
+        self.assertIsNotNone(preds[0]["subject_scores"])
+
 
 if __name__ == "__main__":
     unittest.main()

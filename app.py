@@ -19,15 +19,23 @@ Features:
 
 import os
 import io
+import json
 import datetime
 import pandas as pd
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
 import plotly.express as px
 import plotly.graph_objects as go
 
 import database as db
-from src.student_predictor.models import load_model_suite, StudentModelSuite
+from src.student_predictor.models import (
+    load_model_suite,
+    StudentModelSuite,
+    DEFAULT_SUBJECTS,
+    SUBJECT_PROFILES,
+    predict_subject_wise,
+)
 from src.student_predictor.advisor import generate_recommendations
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -101,9 +109,52 @@ html, body, [class*="css"] {
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
 }
 
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-header {visibility: hidden;}
+/* Streamlit Header & Toolbar Overrides - Never hide header completely to preserve sidebar expand controls */
+#MainMenu { visibility: hidden !important; display: none !important; }
+footer { visibility: hidden !important; display: none !important; }
+[data-testid="stToolbar"] { visibility: hidden !important; display: none !important; }
+[data-testid="stDecoration"] { display: none !important; }
+[data-testid="stStatusWidget"] { visibility: hidden !important; display: none !important; }
+
+/* Keep header transparent and pass-through so it does not block the page */
+header[data-testid="stHeader"] {
+    background: transparent !important;
+    background-color: transparent !important;
+    pointer-events: none !important;
+    z-index: 99990 !important;
+}
+
+/* Sidebar Collapsed Control: Always visible, clickable, and beautifully styled on top-left */
+[data-testid="stSidebarCollapsedControl"],
+header[data-testid="stHeader"] [data-testid="stSidebarCollapsedControl"] {
+    visibility: visible !important;
+    display: flex !important;
+    pointer-events: auto !important;
+    position: fixed !important;
+    top: 14px !important;
+    left: 14px !important;
+    z-index: 999999 !important;
+}
+
+[data-testid="stSidebarCollapsedControl"] button,
+header[data-testid="stHeader"] button[kind="header"] {
+    background: linear-gradient(135deg, #0E1726 0%, #111E36 100%) !important;
+    border: 1px solid #0284C7 !important;
+    color: #38BDF8 !important;
+    border-radius: 10px !important;
+    padding: 8px 12px !important;
+    box-shadow: 0 0 16px rgba(2, 132, 199, 0.45) !important;
+    cursor: pointer !important;
+    transition: all 0.25s ease !important;
+}
+
+[data-testid="stSidebarCollapsedControl"] button:hover,
+header[data-testid="stHeader"] button[kind="header"]:hover {
+    background: #1E293B !important;
+    border-color: #38BDF8 !important;
+    box-shadow: 0 0 24px rgba(56, 189, 248, 0.7) !important;
+    transform: scale(1.06) !important;
+}
 
 /* Root App Background */
 .stApp {
@@ -122,12 +173,31 @@ header {visibility: hidden;}
 section[data-testid="stSidebar"] {
     background-color: #0D1424 !important;
     border-right: 1px solid #1E293B !important;
+    z-index: 1000 !important;
 }
 section[data-testid="stSidebar"] * {
     color: #CBD5E1 !important;
 }
 section[data-testid="stSidebar"] hr {
     border-color: #1E293B !important;
+}
+
+/* Style the collapse button inside the sidebar */
+[data-testid="stSidebarCollapseButton"] button {
+    color: #94A3B8 !important;
+    border-radius: 8px !important;
+    transition: all 0.2s ease !important;
+}
+[data-testid="stSidebarCollapseButton"] button:hover {
+    color: #38BDF8 !important;
+    background: rgba(56, 189, 248, 0.1) !important;
+}
+
+/* Prevent accidental collapse on desktop: keep sidebar pinned open */
+@media (min-width: 992px) {
+    [data-testid="stSidebarCollapseButton"] {
+        display: none !important;
+    }
 }
 
 /* Sidebar Navigation Radios */
@@ -587,6 +657,403 @@ def sign_out():
     st.session_state.active_nav = "Overview"
 
 
+def ensure_sidebar_expanded():
+    """
+    Injects JavaScript to guarantee the sidebar is auto-expanded and restored
+    if it was collapsed or cached as collapsed in localStorage.
+    """
+    restore_js = """
+    <script>
+    (function() {
+        function triggerSidebarOpen() {
+            try {
+                var pDoc = window.parent.document;
+                if (!pDoc) return;
+                
+                // 1. Look for Streamlit's collapsed control button in parent DOM
+                var collapsedCtrl = pDoc.querySelector('[data-testid="stSidebarCollapsedControl"]');
+                if (collapsedCtrl) {
+                    var btn = collapsedCtrl.querySelector('button') || collapsedCtrl;
+                    if (btn && typeof btn.click === 'function') {
+                        btn.click();
+                    }
+                }
+                
+                // 2. Also check if sidebar has aria-expanded="false"
+                var sidebar = pDoc.querySelector('section[data-testid="stSidebar"]');
+                if (sidebar && sidebar.getAttribute('aria-expanded') === 'false') {
+                    var openBtn = pDoc.querySelector('button[aria-label="Open sidebar"]') ||
+                                  pDoc.querySelector('[data-testid="stSidebarCollapsedControl"] button');
+                    if (openBtn && typeof openBtn.click === 'function') {
+                        openBtn.click();
+                    }
+                }
+                
+                // 3. Clear any collapsed preference from localStorage
+                try {
+                    var ls = window.parent.localStorage;
+                    if (ls) {
+                        for (var i = 0; i < ls.length; i++) {
+                            var k = ls.key(i);
+                            if (k && (k.indexOf("sidebar") !== -1 || k.indexOf("Sidebar") !== -1)) {
+                                var v = ls.getItem(k);
+                                if (v && v.indexOf('"collapsed":true') !== -1) {
+                                    ls.setItem(k, v.replace('"collapsed":true', '"collapsed":false'));
+                                }
+                            }
+                        }
+                    }
+                } catch (eLS) {}
+            } catch (e) {
+                // Ignore any cross-origin restrictions
+            }
+        }
+        
+        triggerSidebarOpen();
+        setTimeout(triggerSidebarOpen, 100);
+        setTimeout(triggerSidebarOpen, 350);
+        setTimeout(triggerSidebarOpen, 800);
+    })();
+    </script>
+    """
+    components.html(restore_js, height=0, width=0)
+
+
+# -----------------------------------------------------------------------------
+# SUBJECT-WISE PREDICTION & DATA EXPANSION HELPERS
+# -----------------------------------------------------------------------------
+def parse_subject_scores(raw_val):
+    """Safely parse subject_scores JSON string or dictionary."""
+    if not raw_val:
+        return None
+    if isinstance(raw_val, dict):
+        return raw_val
+    try:
+        return json.loads(raw_val)
+    except Exception:
+        return None
+
+
+def expand_df_with_subjects(df_in: pd.DataFrame) -> pd.DataFrame:
+    """Expands subject_scores JSON into human-readable CSV columns for export."""
+    if df_in is None or len(df_in) == 0:
+        return df_in
+    df = df_in.copy()
+    if "subject_scores" not in df.columns:
+        return df
+
+    cols = [
+        ("Mathematics", "Math"),
+        ("Science", "Science"),
+        ("English", "English"),
+        ("Social Science", "SocialScience"),
+        ("Computer Science", "ComputerScience"),
+    ]
+
+    store = {f"{c[1]}_Prev": [] for c in cols}
+    store.update({f"{c[1]}_Pred": [] for c in cols})
+    has_any = False
+
+    for val in df["subject_scores"]:
+        parsed = parse_subject_scores(val)
+        if parsed and "subjects" in parsed:
+            has_any = True
+            subs = parsed["subjects"]
+            for sub_name, col_pfx in cols:
+                s_data = subs.get(sub_name, {})
+                p_prev = s_data.get("previous_score", s_data.get("previous_marks", ""))
+                p_pred = s_data.get("predicted_score", s_data.get("predicted_upcoming_marks", ""))
+                store[f"{col_pfx}_Prev"].append(p_prev)
+                store[f"{col_pfx}_Pred"].append(p_pred)
+        else:
+            for _, col_pfx in cols:
+                store[f"{col_pfx}_Prev"].append("")
+                store[f"{col_pfx}_Pred"].append("")
+
+    if has_any:
+        for k, v in store.items():
+            df[k] = v
+
+    return df
+
+
+def render_subject_breakdown_section(
+    sub_bundle: dict,
+    title: str = "Subject-Wise Upcoming Marks Forecast & Growth Analysis",
+    subtitle: str = "Predicted upcoming examination marks for each subject based on your previous year marks and study behavior.",
+    key_suffix: str = "main",
+):
+    """Renders comprehensive subject-wise summary cards, subject details, and interactive charts."""
+    if not sub_bundle or "subjects" not in sub_bundle:
+        return
+
+    summary = sub_bundle.get("summary", {})
+    subj_data = sub_bundle["subjects"]
+    if not subj_data:
+        return
+
+    render_html(f"""
+    <div style="margin: 24px 0 14px 0;">
+        <div style="font-size: 19px; font-weight: 800; color: #F8FAFC; display: flex; align-items: center; gap: 10px;">
+            <span>📊</span> {title}
+        </div>
+        <div style="font-size: 13px; color: #94A3B8; margin-top: 4px;">
+            {subtitle}
+        </div>
+    </div>
+    """)
+
+    # Summary Metrics Banner (3 columns)
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        strongest_name = summary.get("strongest_subject", "N/A")
+        strongest_val = summary.get("strongest_score", 0.0)
+        render_html(f"""
+        <div class="kpi-card-dark" style="padding: 14px 16px;">
+            <div class="kpi-icon-dark kpi-icon-green" style="width:40px; height:40px; font-size:18px;">🌟</div>
+            <div>
+                <div class="kpi-title-dark" style="font-size:11px;">Strongest Subject</div>
+                <div style="font-size:16px; font-weight:800; color:#34D399;">{strongest_name} ({strongest_val}%)</div>
+            </div>
+        </div>
+        """)
+
+    with b2:
+        weakest_name = summary.get("weakest_subject", "N/A")
+        weakest_val = summary.get("weakest_score", 0.0)
+        render_html(f"""
+        <div class="kpi-card-dark" style="padding: 14px 16px;">
+            <div class="kpi-icon-dark kpi-icon-amber" style="width:40px; height:40px; font-size:18px;">🎯</div>
+            <div>
+                <div class="kpi-title-dark" style="font-size:11px;">Focus Area / Weakest</div>
+                <div style="font-size:16px; font-weight:800; color:#FBBF24;">{weakest_name} ({weakest_val}%)</div>
+            </div>
+        </div>
+        """)
+
+    with b3:
+        prev_avg = summary.get("average_previous", 0.0)
+        pred_avg = summary.get("average_predicted", 0.0)
+        avg_diff = round(pred_avg - prev_avg, 1)
+        diff_sign = f"+{avg_diff}" if avg_diff >= 0 else f"{avg_diff}"
+        diff_color = "#34D399" if avg_diff >= 0 else "#F87171"
+        render_html(f"""
+        <div class="kpi-card-dark" style="padding: 14px 16px;">
+            <div class="kpi-icon-dark kpi-icon-blue" style="width:40px; height:40px; font-size:18px;">📈</div>
+            <div>
+                <div class="kpi-title-dark" style="font-size:11px;">Subject Average Shift</div>
+                <div style="font-size:16px; font-weight:800; color:#38BDF8;">{prev_avg}% → {pred_avg}% (<span style="color:{diff_color};">{diff_sign}</span>)</div>
+            </div>
+        </div>
+        """)
+
+    st.write("")
+
+    # 5 Subject Detail Cards Grid
+    sub_cols = st.columns(len(subj_data))
+    for col, (sub_name, s_info) in zip(sub_cols, subj_data.items()):
+        with col:
+            prev_s = s_info.get("previous_score", s_info.get("previous_marks", 0.0))
+            pred_s = s_info.get("predicted_score", s_info.get("predicted_upcoming_marks", 0.0))
+            diff_val = s_info.get("score_diff", round(pred_s - prev_s, 1))
+            diff_str = f"+{diff_val}" if diff_val >= 0 else f"{diff_val}"
+            trend_color = "#34D399" if diff_val > 0 else ("#F87171" if diff_val < 0 else "#94A3B8")
+            grade_badge = f"<span class='badge-grade grade-{s_info.get('predicted_grade', 'B')}'>{s_info.get('predicted_grade', 'B')}</span>"
+            pf = s_info.get("predicted_passfail", "PASS").upper()
+            status_badge = f"<span class='badge-status badge-pass'>PASS</span>" if pf == "PASS" else f"<span class='badge-status badge-fail'>FAIL</span>"
+
+            card_html = f"""
+            <div style="background: #111A2E; border: 1px solid #1E293B; border-radius: 14px; padding: 16px 12px; height: 100%; box-shadow: 0 4px 16px rgba(0,0,0,0.25); display: flex; flex-direction: column; justify-content: space-between;">
+                <div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <span style="font-size: 20px;">{s_info.get('icon', '📚')}</span>
+                        {grade_badge}
+                    </div>
+                    <div style="font-weight: 800; color: #F8FAFC; font-size: 13.5px; line-height: 1.2; margin-bottom: 8px;">
+                        {sub_name}
+                    </div>
+                    <div style="background: #090F1D; border: 1px solid #1E293B; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #94A3B8;">
+                            <span>Last Year:</span>
+                            <span style="font-weight: 700; color: #CBD5E1;">{prev_s:.1f}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 800; margin-top: 4px;">
+                            <span style="color: #F8FAFC;">Upcoming:</span>
+                            <span style="color: #38BDF8;">{pred_s:.1f}%</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 11px; margin-top: 4px; font-weight: 600;">
+                            <span style="color: #64748B;">Change:</span>
+                            <span style="color: {trend_color};">{diff_str} pts</span>
+                        </div>
+                    </div>
+                    <div style="text-align: center; margin-bottom: 8px;">
+                        {status_badge}
+                    </div>
+                </div>
+                <div style="font-size: 11px; color: #94A3B8; line-height: 1.35; background: rgba(255,255,255,0.02); padding: 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.04);">
+                    {s_info.get('advice', 'Keep working consistently!')}
+                </div>
+            </div>
+            """
+            render_html(card_html)
+
+    st.write("")
+
+    # Visual Charts Comparison (Bar Chart + Radar Chart)
+    c_bar, c_radar = st.columns([1.6, 1.2])
+    with c_bar:
+        render_html("""
+        <div class="content-card-dark" style="margin-bottom:0; padding-bottom:8px;">
+            <h4>Previous Year vs Predicted Upcoming Marks</h4>
+        </div>
+        """)
+
+        subj_names = list(subj_data.keys())
+        prev_vals = [subj_data[k].get("previous_score", subj_data[k].get("previous_marks", 0.0)) for k in subj_names]
+        pred_vals = [subj_data[k].get("predicted_score", subj_data[k].get("predicted_upcoming_marks", 0.0)) for k in subj_names]
+
+        fig_bar = go.Figure()
+        fig_bar.add_trace(go.Bar(
+            x=subj_names,
+            y=prev_vals,
+            name="Previous Year Marks",
+            marker_color="#64748B",
+            text=[f"{v:.0f}" for v in prev_vals],
+            textposition="auto",
+        ))
+        fig_bar.add_trace(go.Bar(
+            x=subj_names,
+            y=pred_vals,
+            name="Predicted Upcoming Marks",
+            marker_color="#38BDF8",
+            text=[f"{v:.1f}" for v in pred_vals],
+            textposition="auto",
+        ))
+        fig_bar.update_layout(
+            barmode="group",
+            height=290,
+            margin=dict(l=20, r=20, t=20, b=20),
+            yaxis=dict(range=[0, 105], gridcolor="#1E293B", tickfont=dict(color="#94A3B8", size=10)),
+            xaxis=dict(gridcolor="#1E293B", tickfont=dict(color="#CBD5E1", size=10)),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(color="#CBD5E1", size=11)),
+            font={"family": "Plus Jakarta Sans"},
+        )
+        st.plotly_chart(fig_bar, use_container_width=True, key=f"bar_{key_suffix}")
+
+    with c_radar:
+        render_html("""
+        <div class="content-card-dark" style="margin-bottom:0; padding-bottom:8px;">
+            <h4>Holistic Competency Profile</h4>
+        </div>
+        """)
+
+        categories = list(subj_data.keys())
+        fig_radar = go.Figure()
+
+        fig_radar.add_trace(go.Scatterpolar(
+            r=prev_vals + [prev_vals[0]],
+            theta=categories + [categories[0]],
+            name="Previous Year",
+            line=dict(color="#64748B", width=2),
+            fill="toself",
+            fillcolor="rgba(100, 116, 139, 0.15)",
+        ))
+        fig_radar.add_trace(go.Scatterpolar(
+            r=pred_vals + [pred_vals[0]],
+            theta=categories + [categories[0]],
+            name="Predicted Upcoming",
+            line=dict(color="#38BDF8", width=3),
+            fill="toself",
+            fillcolor="rgba(56, 189, 248, 0.25)",
+        ))
+
+        fig_radar.update_layout(
+            polar=dict(
+                radialaxis=dict(visible=True, range=[0, 100], gridcolor="#1E293B", tickfont=dict(color="#94A3B8", size=9)),
+                angularaxis=dict(gridcolor="#1E293B", tickfont=dict(color="#E2E8F0")),
+                bgcolor="rgba(0,0,0,0)",
+            ),
+            height=290,
+            margin=dict(l=30, r=30, t=20, b=20),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(color="#CBD5E1", size=11)),
+            paper_bgcolor="rgba(0,0,0,0)",
+            font={"family": "Plus Jakarta Sans"},
+        )
+        st.plotly_chart(fig_radar, use_container_width=True, key=f"radar_{key_suffix}")
+
+
+def render_portal_top_nav():
+    """
+    Renders an accessible top navigation bar on every portal screen with:
+    - Back button on the left (Back to Overview/Dashboard if on subpage, or Back to Home/Sign Out)
+    - Re-open/Restore Sidebar button
+    - Institutional badge / Student identity on the right
+    """
+    role = st.session_state.role
+    active = st.session_state.active_nav
+    is_admin = (role == "admin")
+
+    col_nav_left, col_nav_right = st.columns([3.4, 1.2])
+    with col_nav_left:
+        # Determine back button behavior
+        subpage_back = False
+        if is_admin and active != "Overview":
+            subpage_back = True
+            back_label = "← Back to Overview"
+            back_dest = "Overview"
+        elif not is_admin and active != "Dashboard":
+            subpage_back = True
+            back_label = "← Back to Dashboard"
+            back_dest = "Dashboard"
+        else:
+            back_label = "← Back to Home"
+            back_dest = None
+
+        col_b1, col_b2, col_b3 = st.columns([1.5, 1.4, 1.1])
+        with col_b1:
+            if st.button(back_label, key=f"nav_back_btn_{active}", use_container_width=True, help="Go back to previous portal screen or landing home"):
+                if subpage_back:
+                    st.session_state.active_nav = back_dest
+                else:
+                    sign_out()
+                st.rerun()
+
+        with col_b2:
+            if st.button("📌 Restore Sidebar", key=f"nav_restore_sb_{active}", use_container_width=True, help="Re-expand navigation sidebar if collapsed"):
+                ensure_sidebar_expanded()
+                st.rerun()
+
+        with col_b3:
+            if subpage_back:
+                if st.button("🚪 Sign Out", key=f"nav_exit_portal_{active}", use_container_width=True, help="Exit portal and sign out"):
+                    sign_out()
+                    st.rerun()
+
+    with col_nav_right:
+        if is_admin:
+            render_html("""
+            <div style="text-align: right; padding-top: 4px;">
+                <span style="background: rgba(168, 85, 247, 0.15); color: #C084FC; padding: 6px 14px; border-radius: 999px; font-weight: 700; font-size: 12px; border: 1px solid rgba(168, 85, 247, 0.3);">
+                    🛡️ Admin Authority
+                </span>
+            </div>
+            """)
+        else:
+            full_n = st.session_state.full_name or "Student"
+            uname = st.session_state.username or ""
+            render_html(f"""
+            <div style="text-align: right; padding-top: 4px;">
+                <span style="background: rgba(56, 189, 248, 0.12); color: #38BDF8; padding: 6px 14px; border-radius: 999px; font-weight: 700; font-size: 12px; border: 1px solid rgba(56, 189, 248, 0.25);">
+                    👤 {full_n} (@{uname})
+                </span>
+            </div>
+            """)
+
+    st.markdown("<div style='height: 1px; background: #1E293B; margin-top: 8px; margin-bottom: 22px;'></div>", unsafe_allow_html=True)
+
+
 # =============================================================================
 # SCREEN 1: HOME / LANDING PAGE (DARK MODE)
 # =============================================================================
@@ -689,9 +1156,9 @@ def render_screen_1_home():
     with fc2:
         render_html("""
         <div class="feature-card-dark">
-            <div class="feature-card-icon" style="background: rgba(168, 85, 247, 0.15); color: #C084FC;">🏆</div>
-            <h4>Letter Grade Classifier</h4>
-            <p>Categorizes outcomes into A, B, C, or D with class probability vectors.</p>
+            <div class="feature-card-icon" style="background: rgba(56, 189, 248, 0.15); color: #38BDF8;">📚</div>
+            <h4>Subject-Wise Predictions</h4>
+            <p>Input previous year marks for Math, Science, English, etc. to predict individual subject upcoming marks.</p>
         </div>
         """)
     with fc3:
@@ -746,7 +1213,7 @@ def render_screen_2_student_login():
                 st.error("Invalid student credentials. (Demo: `megha` / `password123`)")
 
         st.write("")
-        c_link1, c_link2 = st.columns([1, 1])
+        c_link1, c_link2, c_link3 = st.columns([1, 1, 1])
         with c_link1:
             st.caption("New student?")
             if st.button("Create Account", key="btn_to_reg", use_container_width=True):
@@ -756,6 +1223,11 @@ def render_screen_2_student_login():
             st.caption("Institutional Staff?")
             if st.button("Admin Portal", key="btn_to_admin_login", use_container_width=True):
                 st.session_state.landing_view = "admin_login"
+                st.rerun()
+        with c_link3:
+            st.caption("Main Site?")
+            if st.button("← Back to Home", key="btn_back_home_from_login", use_container_width=True):
+                st.session_state.landing_view = "home"
                 st.rerun()
 
 
@@ -800,9 +1272,15 @@ def render_screen_3_student_registration():
 
         st.write("")
         st.caption("Already have an active account?")
-        if st.button("Back to Student Login", key="btn_to_login_from_reg", use_container_width=True):
-            st.session_state.landing_view = "login"
-            st.rerun()
+        c_reg_b1, c_reg_b2 = st.columns([1, 1])
+        with c_reg_b1:
+            if st.button("← Back to Student Login", key="btn_to_login_from_reg", use_container_width=True):
+                st.session_state.landing_view = "login"
+                st.rerun()
+        with c_reg_b2:
+            if st.button("🏠 Back to Home", key="btn_to_home_from_reg", use_container_width=True):
+                st.session_state.landing_view = "home"
+                st.rerun()
 
 
 # =============================================================================
@@ -839,9 +1317,15 @@ def render_admin_login():
                 st.error("Invalid administrator credentials. (Default: `admin` / `admin123`)")
 
         st.write("")
-        if st.button("← Back to Student Login", key="btn_back_to_stu_login", use_container_width=True):
-            st.session_state.landing_view = "login"
-            st.rerun()
+        c_adm_b1, c_adm_b2 = st.columns([1, 1])
+        with c_adm_b1:
+            if st.button("← Back to Student Login", key="btn_back_to_stu_login", use_container_width=True):
+                st.session_state.landing_view = "login"
+                st.rerun()
+        with c_adm_b2:
+            if st.button("🏠 Back to Home", key="btn_back_to_home_adm_login", use_container_width=True):
+                st.session_state.landing_view = "home"
+                st.rerun()
 
 
 # =============================================================================
@@ -849,18 +1333,8 @@ def render_admin_login():
 # =============================================================================
 def render_screen_4_student_dashboard():
     first_name = st.session_state.full_name.split()[0] if st.session_state.full_name else "Student"
-    t1, t2 = st.columns([3, 1])
-    with t1:
-        st.markdown(f"## Welcome back, {first_name}! 👋")
-        st.caption("Here is your latest academic trajectory and machine learning predictions.")
-    with t2:
-        render_html("""
-        <div style="text-align: right; padding-top: 10px;">
-            <span style="background: rgba(56, 189, 248, 0.12); color: #38BDF8; padding: 6px 12px; border-radius: 999px; font-weight: 700; font-size: 12px; border: 1px solid rgba(56, 189, 248, 0.25);">
-                👤 Student Account
-            </span>
-        </div>
-        """)
+    st.markdown(f"## Welcome back, {first_name}! 👋")
+    st.caption("Here is your latest academic trajectory and machine learning predictions.")
 
     st.write("")
 
@@ -924,7 +1398,34 @@ def render_screen_4_student_dashboard():
 
     st.write("")
 
-    col_chart, col_actions = st.columns([2.3, 1])
+    col_actions, col_chart = st.columns([1, 2.3])
+
+    with col_actions:
+        render_html("""
+        <div class="content-card-dark" style="margin-bottom:12px; padding: 14px 16px;">
+            <h4 style="margin:0 0 4px 0;">⚡ Quick Shortcuts</h4>
+            <span style="color:#94A3B8; font-size:12px;">Instant student actions</span>
+        </div>
+        """)
+
+        if st.button("🔮 Predict Exam Score", use_container_width=True, key="qa_pred"):
+            st.session_state.active_nav = "Predict Performance"
+            st.rerun()
+
+        st.write("")
+        if st.button("📈 View Full History", use_container_width=True, key="qa_hist"):
+            st.session_state.active_nav = "My History & Analytics"
+            st.rerun()
+
+        st.write("")
+        if st.button("👤 Update My Profile", use_container_width=True, key="qa_prof"):
+            st.session_state.active_nav = "My Profile"
+            st.rerun()
+
+        st.write("")
+        if st.button("🚪 Sign Out", use_container_width=True, key="qa_signout"):
+            sign_out()
+            st.rerun()
 
     with col_chart:
         render_html("""
@@ -962,26 +1463,17 @@ def render_screen_4_student_dashboard():
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    with col_actions:
-        render_html("""
-        <div class="content-card-dark" style="margin-bottom:12px;">
-            <h4>Quick Shortcuts</h4>
-        </div>
-        """)
-
-        if st.button("🔮 Predict New Exam Score", use_container_width=True, key="qa_pred"):
-            st.session_state.active_nav = "Predict Performance"
-            st.rerun()
-
-        st.write("")
-        if st.button("📈 View Complete History", use_container_width=True, key="qa_hist"):
-            st.session_state.active_nav = "My History & Analytics"
-            st.rerun()
-
-        st.write("")
-        if st.button("👤 Update My Profile", use_container_width=True, key="qa_prof"):
-            st.session_state.active_nav = "My Profile"
-            st.rerun()
+    if preds:
+        latest_sub = parse_subject_scores(preds[0]["subject_scores"]) if "subject_scores" in preds[0].keys() else None
+        if latest_sub and "subjects" in latest_sub:
+            st.write("")
+            with st.expander("📚 Latest Subject Competency Snapshot (Quick View)", expanded=False):
+                render_subject_breakdown_section(
+                    latest_sub,
+                    title="Your Latest Subject Forecast",
+                    subtitle="Snapshot of your most recent predicted marks by subject.",
+                    key_suffix="dash_snapshot",
+                )
 
 
 # =============================================================================
@@ -1010,20 +1502,61 @@ def render_screen_5_prediction_page():
             internet_acc = st.selectbox("High-Speed Internet Access at Home", ["Yes", "No"], index=0)
             extracurricular = st.selectbox("Participation in Extracurricular Activities", ["Yes", "No"], index=0)
 
+        # Subject-Wise Previous Year Examination Marks
+        render_html("""
+        <div style="margin: 20px 0 12px 0; padding: 14px 18px; background: rgba(56, 189, 248, 0.08); border-left: 4px solid #38BDF8; border-radius: 10px; border-top: 1px solid rgba(56,189,248,0.18); border-right: 1px solid rgba(56,189,248,0.18); border-bottom: 1px solid rgba(56,189,248,0.18);">
+            <div style="font-weight: 800; color: #F8FAFC; font-size: 15px; display: flex; align-items: center; gap: 8px;">
+                <span>📚</span> Subject-Wise Previous Year Examination Marks (Out of 100)
+            </div>
+            <div style="color: #94A3B8; font-size: 12.5px; margin-top: 4px; line-height: 1.4;">
+                Enter your previous year marks for each subject below. Our AI engine will forecast your upcoming marks for every individual subject alongside your overall performance.
+            </div>
+        </div>
+        """)
+
+        sm1, sm2, sm3, sm4, sm5 = st.columns(5)
+        with sm1:
+            sub_math = st.number_input("📐 Mathematics", min_value=0.0, max_value=100.0, value=75.0, step=1.0, key="sub_m")
+        with sm2:
+            sub_sci = st.number_input("🔬 Science", min_value=0.0, max_value=100.0, value=70.0, step=1.0, key="sub_s")
+        with sm3:
+            sub_eng = st.number_input("📚 English", min_value=0.0, max_value=100.0, value=80.0, step=1.0, key="sub_e")
+        with sm4:
+            sub_soc = st.number_input("🌍 Social Science", min_value=0.0, max_value=100.0, value=72.0, step=1.0, key="sub_ss")
+        with sm5:
+            sub_cs = st.number_input("💻 Computer Sci", min_value=0.0, max_value=100.0, value=78.0, step=1.0, key="sub_c")
+
+        sync_prev_avg = st.checkbox(
+            "🔄 Auto-sync Overall Previous Score with average of entered subjects",
+            value=True,
+            help="When checked, your overall previous score is calculated as the average of the subject marks entered above.",
+        )
+
         st.write("")
         submitted = st.form_submit_button("⚡ Run ML Ensemble Prediction", use_container_width=True)
 
     if submitted and suite:
+        subject_marks = {
+            "Mathematics": float(sub_math),
+            "Science": float(sub_sci),
+            "English": float(sub_eng),
+            "Social Science": float(sub_soc),
+            "Computer Science": float(sub_cs),
+        }
+        calculated_prev_avg = round(sum(subject_marks.values()) / len(subject_marks), 1)
+        effective_prev_score = calculated_prev_avg if sync_prev_avg else float(prev_sc)
+
         inputs = {
             "study_hours_per_week": study_hrs,
             "attendance_percent": att_pct,
-            "previous_score": prev_sc,
+            "previous_score": effective_prev_score,
             "sleep_hours": sleep_hrs,
             "parental_education": pe_map.get(parental_edu, "bachelors"),
             "internet_access": internet_acc.lower(),
             "extracurricular": extracurricular.lower(),
         }
         res = suite.predict_single(inputs)
+        sub_bundle = predict_subject_wise(res, subject_marks, inputs)
 
         db.save_prediction(
             st.session_state.username,
@@ -1031,12 +1564,16 @@ def render_screen_5_prediction_page():
             res["predicted_score"],
             res["predicted_passfail"],
             res["predicted_grade"],
+            subject_scores=sub_bundle,
         )
         st.session_state["cur_pred_result"] = res
+        st.session_state["cur_pred_subjects"] = sub_bundle
         st.session_state["cur_pred_inputs"] = inputs
+        st.session_state["cur_pred_subject_marks"] = subject_marks
 
     if "cur_pred_result" in st.session_state:
         res = st.session_state["cur_pred_result"]
+        sub_bundle = st.session_state.get("cur_pred_subjects", {})
         inp = st.session_state.get("cur_pred_inputs", {})
         recs = generate_recommendations(inp, res)
 
@@ -1072,6 +1609,15 @@ def render_screen_5_prediction_page():
         </div>
         """
         render_html(result_html)
+
+        # Subject-Wise Upcoming Marks Forecast & Competency Breakdown
+        if sub_bundle and "subjects" in sub_bundle:
+            render_subject_breakdown_section(
+                sub_bundle,
+                title="Subject-Wise Upcoming Marks Forecast & Growth Analysis",
+                subtitle="Predicted upcoming examination marks for each subject based on your previous year marks and study behavior.",
+                key_suffix="live_pred",
+            )
 
         if recs:
             st.write("")
@@ -1159,8 +1705,9 @@ def render_screen_6_history():
     with c_hdr:
         st.markdown("### Detailed Prediction History Log")
     with c_dl:
+        export_df = expand_df_with_subjects(df)
         csv_buffer = io.StringIO()
-        df.to_csv(csv_buffer, index=False)
+        export_df.to_csv(csv_buffer, index=False)
         st.download_button(
             "📥 Download My Logs (CSV)",
             data=csv_buffer.getvalue(),
@@ -1209,6 +1756,36 @@ def render_screen_6_history():
     </div>
     """
     render_html(full_table)
+
+    # Subject-Wise History Explorer
+    runs_with_subj = []
+    for r in rows:
+        if "subject_scores" in r.keys():
+            sb = parse_subject_scores(r["subject_scores"])
+            if sb and "subjects" in sb:
+                runs_with_subj.append((r, sb))
+
+    if runs_with_subj:
+        st.write("")
+        st.markdown("### 📊 Subject-Wise Historical Breakdown")
+        st.caption("Inspect individual subject marks and predicted upcoming marks from your past simulations.")
+
+        options_dict = {}
+        for r, sb in runs_with_subj:
+            lbl = f"Run #{r['id']} ({str(r['created_at']).split()[0]}) — Predicted: {r['predicted_score']:.1f}% (Grade: {r['predicted_grade']})"
+            options_dict[lbl] = sb
+
+        sel_run_lbl = st.selectbox(
+            "Select Past Prediction Run to Inspect Subject Breakdown",
+            list(options_dict.keys()),
+            key="sel_hist_sub_run",
+        )
+        render_subject_breakdown_section(
+            options_dict[sel_run_lbl],
+            title="Subject Marks Breakdown for Selected Run",
+            subtitle="Comparison of entered previous year marks vs model predicted upcoming marks.",
+            key_suffix="hist_inspect",
+        )
 
 
 # =============================================================================
@@ -1263,18 +1840,8 @@ def render_student_profile():
 # SCREEN 9: ADMIN — OVERVIEW (DARK MODE)
 # =============================================================================
 def render_screen_7_admin_overview():
-    t1, t2 = st.columns([3, 1])
-    with t1:
-        st.markdown("## 📊 Institutional Admin Overview")
-        st.caption("Live high-level performance indicators, grade distributions, and cohort trends.")
-    with t2:
-        render_html("""
-        <div style="text-align: right; padding-top: 10px;">
-            <span style="background: rgba(168, 85, 247, 0.15); color: #C084FC; padding: 6px 14px; border-radius: 999px; font-weight: 700; font-size: 12px; border: 1px solid rgba(168, 85, 247, 0.3);">
-                🛡️ Admin Authority
-            </span>
-        </div>
-        """)
+    st.markdown("## 📊 Institutional Admin Overview")
+    st.caption("Live high-level performance indicators, grade distributions, and cohort trends.")
 
     st.write("")
 
@@ -1328,8 +1895,34 @@ def render_screen_7_admin_overview():
 
     st.write("")
 
-    # Visual Charts
-    col_chart, col_donut = st.columns([1.8, 1.2])
+    # Left Navigation Shortcuts & Visual Charts
+    col_nav, col_chart, col_donut = st.columns([1.05, 1.65, 1.3])
+
+    with col_nav:
+        render_html("""
+        <div class="content-card-dark" style="margin-bottom:12px; padding: 14px 16px;">
+            <h4 style="margin:0 0 4px 0;">⚡ Quick Navigation</h4>
+            <span style="color:#94A3B8; font-size:12px;">Direct portal shortcuts</span>
+        </div>
+        """)
+        if st.button("👥 Manage Students", use_container_width=True, key="adm_left_btn_manage"):
+            st.session_state.active_nav = "Manage Students"
+            st.rerun()
+
+        st.write("")
+        if st.button("📋 All Predictions Log", use_container_width=True, key="adm_left_btn_preds"):
+            st.session_state.active_nav = "All Predictions"
+            st.rerun()
+
+        st.write("")
+        if st.button("⚙️ Settings & Security", use_container_width=True, key="adm_left_btn_settings"):
+            st.session_state.active_nav = "Settings"
+            st.rerun()
+
+        st.write("")
+        if st.button("🚪 Sign Out", use_container_width=True, key="adm_left_btn_signout"):
+            sign_out()
+            st.rerun()
 
     with col_chart:
         render_html("""
@@ -1654,6 +2247,34 @@ def render_screen_8_manage_students():
             """
             render_html(h_table_html)
 
+            # Subject-Wise Inspection for Selected Student
+            runs_with_subj = []
+            for p in stu_preds:
+                if "subject_scores" in p.keys():
+                    sb = parse_subject_scores(p["subject_scores"])
+                    if sb and "subjects" in sb:
+                        runs_with_subj.append((p, sb))
+
+            if runs_with_subj:
+                st.write("")
+                st.markdown("###### 📚 Subject-Wise Breakdown Explorer")
+                opt_map = {}
+                for r, sb in runs_with_subj:
+                    lbl = f"Run #{r['id']} ({str(r['created_at']).split()[0]}) — Score: {r['predicted_score']:.1f}% (Grade: {r['predicted_grade']})"
+                    opt_map[lbl] = sb
+
+                sel_lbl = st.selectbox(
+                    "Select Prediction Run to Inspect Subject Marks",
+                    list(opt_map.keys()),
+                    key=f"stu_sub_{target_uname}",
+                )
+                render_subject_breakdown_section(
+                    opt_map[sel_lbl],
+                    title=f"Subject Breakdown — {target_student['full_name']} (@{target_uname})",
+                    subtitle="Previous year marks vs model-predicted upcoming marks.",
+                    key_suffix=f"admin_stu_{target_uname}",
+                )
+
 
 # =============================================================================
 # SCREEN 11: ADMIN — ALL PREDICTIONS / STUDENT HISTORY (DARK MODE)
@@ -1754,8 +2375,9 @@ def render_screen_9_all_predictions():
     with c_tbl_hdr:
         st.markdown(f"### Prediction Records Log ({cnt_total} results)")
     with c_tbl_dl:
+        export_df = expand_df_with_subjects(filtered_df)
         csv_out = io.StringIO()
-        filtered_df.to_csv(csv_out, index=False)
+        export_df.to_csv(csv_out, index=False)
         st.download_button(
             "📥 Download Filtered Log (CSV)",
             data=csv_out.getvalue(),
@@ -1810,6 +2432,34 @@ def render_screen_9_all_predictions():
         </div>
         """
         render_html(pred_table_html)
+
+        # Subject-Wise Inspection Section for Admin
+        preds_with_subs = []
+        for _, r in filtered_df.iterrows():
+            if "subject_scores" in r and r["subject_scores"]:
+                sb = parse_subject_scores(r["subject_scores"])
+                if sb and "subjects" in sb:
+                    preds_with_subs.append((r, sb))
+
+        if preds_with_subs:
+            st.write("")
+            with st.expander("🔬 Inspect Student Subject-Wise Breakdown & Competency", expanded=False):
+                opt_map = {}
+                for r, sb in preds_with_subs:
+                    lbl = f"Record #{r['id']} — {r['full_name']} (@{r['username']}) | Score: {r['predicted_score']:.1f}% ({r['predicted_grade']}) | {str(r['created_at']).split()[0]}"
+                    opt_map[lbl] = sb
+
+                sel_rec = st.selectbox(
+                    "Select Student Prediction Record",
+                    list(opt_map.keys()),
+                    key="admin_all_preds_subj_sel",
+                )
+                render_subject_breakdown_section(
+                    opt_map[sel_rec],
+                    title=f"Subject Marks Forecast — {sel_rec.split(' | ')[0]}",
+                    subtitle="Institutional audit: previous year marks vs predicted upcoming marks.",
+                    key_suffix="admin_all_inspect",
+                )
     else:
         st.info("No prediction records match the selected filter criteria.")
 
@@ -1917,9 +2567,19 @@ if not st.session_state.logged_in:
         render_screen_1_home()
 
 else:
+    # Auto-restore sidebar if it was collapsed or cached as collapsed in localStorage
+    ensure_sidebar_expanded()
+
     # Sidebar Navigation with Logo Header
     with st.sidebar:
         render_sidebar_brand()
+
+        # High-visibility Back to Landing Page button in sidebar top
+        if st.button("← Back to Landing Page", use_container_width=True, key="sidebar_top_back_btn"):
+            sign_out()
+            st.rerun()
+
+        st.write("")
 
         if st.session_state.role == "student":
             stu_avatar_char = st.session_state.full_name[0] if st.session_state.full_name else 'S'
@@ -1938,6 +2598,12 @@ else:
 
             nav_options = ["Dashboard", "Predict Performance", "My History & Analytics", "My Profile"]
             nav_icons = {"Dashboard": "📊", "Predict Performance": "🔮", "My History & Analytics": "📈", "My Profile": "👤"}
+
+            render_html("""
+            <div style="font-size: 11px; font-weight: 700; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.08em; margin: 10px 0 6px 4px;">
+                ⚡ Quick Navigation
+            </div>
+            """)
 
             nav_selection = st.radio(
                 "Student Navigation",
@@ -1966,6 +2632,12 @@ else:
             adm_nav_options = ["Overview", "Manage Students", "All Predictions", "Settings"]
             adm_icons = {"Overview": "📊", "Manage Students": "👥", "All Predictions": "📋", "Settings": "⚙️"}
 
+            render_html("""
+            <div style="font-size: 11px; font-weight: 700; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.08em; margin: 10px 0 6px 4px;">
+                ⚡ Quick Navigation
+            </div>
+            """)
+
             adm_selection = st.radio(
                 "Admin Navigation",
                 adm_nav_options,
@@ -1980,6 +2652,9 @@ else:
         if st.button("🚪 Sign Out", use_container_width=True, key="sidebar_logout_btn"):
             sign_out()
             st.rerun()
+
+    # High-visibility Top Navigation Bar with Back & Sidebar Restore controls
+    render_portal_top_nav()
 
     # Route Rendering
     if st.session_state.role == "student":

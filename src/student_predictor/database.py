@@ -6,6 +6,7 @@ password hashing with seamless legacy SHA-256 upgrade, and student analytics que
 """
 
 import hmac
+import json
 import os
 import secrets
 import sqlite3
@@ -122,9 +123,16 @@ def init_db(db_path: Optional[str] = None) -> None:
             predicted_passfail TEXT,
             predicted_grade TEXT,
             created_at TEXT,
+            subject_scores TEXT,
             FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
         )
     """)
+
+    # Safe migration: ensure subject_scores column exists in predictions table
+    cur.execute("PRAGMA table_info(predictions)")
+    existing_pred_cols = [row[1] for row in cur.fetchall()]
+    if "subject_scores" not in existing_pred_cols:
+        cur.execute("ALTER TABLE predictions ADD COLUMN subject_scores TEXT")
 
     # Performance indexes
     cur.execute("CREATE INDEX IF NOT EXISTS idx_pred_username ON predictions(username)")
@@ -391,17 +399,19 @@ def save_prediction(
     predicted_passfail: str,
     predicted_grade: str,
     db_path: Optional[str] = None,
+    subject_scores: Optional[Dict[str, Any]] = None,
 ) -> int:
-    """Save an individual student prediction record."""
+    """Save an individual student prediction record with optional subject-wise breakdown."""
     conn = get_connection(db_path)
     cur = conn.cursor()
+    sub_json = json.dumps(subject_scores) if subject_scores else None
     cur.execute(
         """
         INSERT INTO predictions (
             username, study_hours_per_week, attendance_percent, previous_score,
             sleep_hours, parental_education, internet_access, extracurricular,
-            predicted_score, predicted_passfail, predicted_grade, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            predicted_score, predicted_passfail, predicted_grade, created_at, subject_scores
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             username,
@@ -416,6 +426,7 @@ def save_prediction(
             str(predicted_passfail),
             str(predicted_grade),
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            sub_json,
         ),
     )
     new_id = cur.lastrowid
